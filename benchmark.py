@@ -8,6 +8,7 @@ from glob import glob
 import pandas as pd
 from streaming import MDSWriter, StreamingDataset
 from time import time
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 
@@ -21,6 +22,7 @@ class MosaicDataset(StreamingDataset):
     def __getitem__(self, idx: int):
         obj = super().__getitem__(idx)
         return obj
+
 
 dataset_name = "the_pile"
 
@@ -54,9 +56,6 @@ else:
     raise ValueError()
 
 
-
-
-
 if os.path.exists("samples.json"):
     with open("samples.json", "r") as fp:
         samples = json.load(fp)
@@ -77,22 +76,23 @@ def write_hf_dataset(samples):
     hf_ds = Dataset.from_pandas(df)
     hf_ds.save_to_disk("hf")
 
+
 def write_parquet_dataset(samples, samp_per_chunk=5_000):
     if os.path.exists("pq"):
         shutil.rmtree("pq")
     os.makedirs("pq", exist_ok=True)
     df = pd.DataFrame(samples)
     for ii in range(0, MAX_SAMPLES, samp_per_chunk):
-        df1 = df.iloc[ii: ii+samp_per_chunk]
+        df1 = df.iloc[ii : ii + samp_per_chunk]
         df1.to_parquet(f"pq/chunk_{ii}.parquet")
 
-def write_mosaic_dataset(samples, fields=FIELDS):
+
+def write_mosaic_dataset(samples, fields=FIELDS, mds_size_limit=2**20 * 64):
     if os.path.exists("mds"):
         shutil.rmtree("mds")
-    mds_size_limit = 2**20 * 64
     with MDSWriter("mds", fields, size_limit=mds_size_limit) as out:
         for sample in samples:
-            sample = {k:sample[k] for k in fields.keys()}
+            sample = {k: sample[k] for k in fields.keys()}
             for k in fields.keys():
                 if sample[k] is None:
                     sample[k] = ""
@@ -101,30 +101,33 @@ def write_mosaic_dataset(samples, fields=FIELDS):
             out.write(sample)
 
 
-
 write_hf_dataset(samples)
 write_parquet_dataset(samples)
 write_mosaic_dataset(samples)
 
 
-
-def time_iter_mds():
-    mds = MosaicDataset(local="mds", remote=None)
+def time_iter_mds(batch_size=10):
+    mds = StreamingDataset(local="mds", remote=None, batch_size=batch_size)
+    mds_dl = DataLoader(mds, batch_size=batch_size)
     num_samples = 0
-    for sample in mds:
-        num_samples += 1
+    for batch in mds_dl:
+        num_samples += len(batch[TEXT_COL])
 
 
-def time_iter_hf(batch_size=10):
+def time_iter_hf(batch_size=10, use_data_loader=False):
     hf_ds = load_from_disk("hf")
     # column removal has a large effect on timing
     hf_ds = hf_ds.remove_columns([col for col in hf_ds.column_names if col != TEXT_COL])
+    if use_data_loader:
+        hf_dl = DataLoader(hf_ds, batch_size=batch_size)
+    else:
+        hf_dl = hf_ds.iter(batch_size=batch_size)
     num_samples = 0
-    for samples in hf_ds.iter(batch_size=batch_size):
-        num_samples += len(samples[TEXT_COL])
+    for batch in hf_dl:
+        num_samples += len(batch[TEXT_COL])
+
 
 class PqDataset:
-
     COLUMNS = list(FIELDS.keys())
 
     def __init__(self, paths):
@@ -134,7 +137,7 @@ class PqDataset:
         for path in self.paths:
             df = pd.read_parquet(path, columns=keep_cols)
             for ii in range(0, df.shape[0], batch_size):
-                df_batch = df.iloc[ii:ii+batch_size]
+                df_batch = df.iloc[ii : ii + batch_size]
                 yield df_batch
 
     def iter_text(self, text_col=TEXT_COL, batch_size=10):
@@ -150,22 +153,22 @@ def time_iter_pq(batch_size=10):
     for batch in iter_text:
         num_samples += len(batch)
 
-n_trials=5
+
+n_trials = 5
 
 timings = {"mds": [], "hf": [], "pq": []}
 for i in range(n_trials):
-
     t0 = time()
     time_iter_mds()
-    timings["mds"].append(time()-t0)
+    timings["mds"].append(time() - t0)
 
     t0 = time()
     time_iter_hf(batch_size=10)
-    timings["hf"].append(time()-t0)
+    timings["hf"].append(time() - t0)
 
     t0 = time()
     time_iter_pq(batch_size=10)
-    timings["pq"].append(time()-t0)
+    timings["pq"].append(time() - t0)
 
-for k,v in timings.items():
+for k, v in timings.items():
     print(k, v)
