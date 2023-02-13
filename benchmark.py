@@ -2,12 +2,17 @@ import json
 import os
 import shutil
 from datasets import load_dataset, load_from_disk
+from datasets import disable_caching
 from datasets import Dataset
 from glob import glob
 import pandas as pd
 from streaming import MDSWriter, StreamingDataset
 from time import time
 from tqdm import tqdm
+
+
+disable_caching()
+
 
 class MosaicDataset(StreamingDataset):
     def __init__(self, local, remote):
